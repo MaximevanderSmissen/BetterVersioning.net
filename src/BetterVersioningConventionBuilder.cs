@@ -49,24 +49,39 @@ public class BetterVersioningConventionBuilder : ApiVersionConventionBuilder
     /// <summary>
     /// Detect duplicate routes caused by BetterVersioning.net
     /// </summary>
-    /// <param name="controllerModel"></param>
-    /// <exception cref="InvalidOperationException"></exception> 
-    /// <summary></summary>
-    /// <param name="controllerModel"></param>
-    private static void DetectDuplicates(ControllerModel controllerModel)
+    /// <param name="controllerModel">The controller to check for duplicate routes.</param>
+    /// <exception cref="InvalidOperationException">the controller has duplicate endpoints.</exception>
+    private void DetectDuplicates(ControllerModel controllerModel)
     {
         // find and group all http methods by their template string (a.k.a route)
-        var groupedHttpMethods = controllerModel.Actions.SelectMany(static action =>
-            action.Attributes.Where(
-                attribute => attribute.GetType().IsSubclassOf(typeof(HttpMethodAttribute)))
+        var groupedHttpMethods = controllerModel.Actions.SelectMany(action =>
+        {
+            var httpMethodAttributes = action.Attributes
+                .Where(attribute => attribute.GetType().IsSubclassOf(typeof(HttpMethodAttribute)))
+                .Cast<HttpMethodAttribute>();
+
+            var from = action.GetFromVersions() ?? controllerModel.GetFromVersions();
+            var util = action.GetUntilVersion() ?? controllerModel.GetUntilVersion();
+            var (supported, deprecated) = AllVersions.GetVersions(from, util);
+
+            return supported.Concat(deprecated).SelectMany(version => httpMethodAttributes.SelectMany(httpMethodAttribute =>
+                    httpMethodAttribute.HttpMethods.Select(method => (httpMethodAttribute.Template, method, version))));
+
+            // Alternative
+            var httpMethods = action.Attributes
+                .Where(attribute => attribute.GetType().IsSubclassOf(typeof(HttpMethodAttribute)))
                 .Cast<HttpMethodAttribute>()
-                .ToList()
-        ).GroupBy(methodAttribute => methodAttribute.Template);
+                .SelectMany(httpMethodAttribute =>
+                    httpMethodAttribute.HttpMethods.Select(method => (httpMethodAttribute.Template, method)));
+
+            return supported.Concat(deprecated).SelectMany(version =>
+                httpMethods.Select(tuple => (tuple.Template, tuple.method, version)));
+        }).GroupBy(methodAttribute => methodAttribute);
 
         // Check whether duplicate strings are found, if not also check whether both `null` and "" are found
         var duplicatesFound =
             groupedHttpMethods.Any(group => group.Count() > 1) ||
-            groupedHttpMethods.Count(group => string.IsNullOrEmpty(group.Key)) > 1;
+            groupedHttpMethods.Count(group => string.IsNullOrEmpty(group.Key.Template)) > 1;
 
         if (duplicatesFound)
         {
